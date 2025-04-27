@@ -176,6 +176,8 @@ class LapRFNode(Node):
         self.is_configured = False
         self.threshold = 0
         self.gain = 0
+        self.band_idx = None
+        self.channel_idx = None
 
 
 class LapRFDevice():
@@ -443,8 +445,8 @@ class LapRFInterface(BaseHardwareInterface):
             # assert record.slot_index is not None and record.slot_index > 0
             local_index = record.slot_index - 1
             node = device.nodes[local_index]
-            # node.band_idx = record.band
-            # node.channel_idx = record.channel
+            node.band_idx = record.band
+            node.channel_idx = record.channel
             old_frequency = node.frequency
             # old_bandChannel = node.bandChannel
             if record.enabled:
