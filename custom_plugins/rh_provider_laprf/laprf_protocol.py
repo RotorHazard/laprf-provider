@@ -77,13 +77,13 @@ class SettingsField(IntEnum):
 
 
 class StateControlField(IntEnum):
-    GATE_STATE = 0x20
+    RACE_STATE = 0x20
 
 
 class StatusField(IntEnum):
     SLOT_INDEX = 0x01
     FLAGS = 0x03
-    BATTERY_VOLTAGE = 0x21
+    INPUT_VOLTAGE = 0x21
     LAST_RSSI = 0x22
     GATE_STATE = 0x23
     DETECTION_COUNT = 0x24
@@ -92,6 +92,13 @@ class StatusField(IntEnum):
 class TimeField(IntEnum):
     RTC_TIME = 0x02
     TIME_RTC_TIME = 0x20
+
+
+class States(IntEnum):
+    STOP_RACE = 0x00
+    START_RACE = 0x01
+    SHUTDOWN = 0xff
+    RESET = 0xfe
 
 
 class LapRFEvent():
@@ -195,7 +202,7 @@ class StatusEvent(LapRFEvent):
 
     def __init__(self: "StatusEvent"):
         super().__init__("status")
-        self.battery_voltage: Optional[int] = None
+        self.input_voltage: Optional[int] = None
         self.gate_state: Optional[int] = None
         self.detection_count: Optional[int] = None
         self.flags: Optional[int] = None
@@ -205,7 +212,7 @@ class StatusEvent(LapRFEvent):
         for slot in self.last_rssi:
             if not isinstance(slot, float):
                 return False
-        return (isinstance(self.battery_voltage, int) and
+        return (isinstance(self.input_voltage, int) and
                 isinstance(self.gate_state, int) and
                 isinstance(self.detection_count, int) and
                 isinstance(self.flags, int))
@@ -649,8 +656,8 @@ def _decode_status_record(record: Decoder) -> StatusEvent:
             slot_index = record.decode_u8_field()
         elif signature == StatusField.FLAGS:
             event.flags = record.decode_u16_field()
-        elif signature == StatusField.BATTERY_VOLTAGE:
-            event.battery_voltage = record.decode_u16_field()
+        elif signature == StatusField.INPUT_VOLTAGE:
+            event.input_voltage = record.decode_u16_field()
         elif signature == StatusField.LAST_RSSI:
             if slot_index and slot_index > 0:
                 slot_index = slot_index - 1  # convert to 1-based index
@@ -760,6 +767,14 @@ def encode_set_status_interval_record(milliseconds: int) -> bytes:
         raise ValueError("Status interval must be greater than zero")
     return (Encoder(RecordType.SETTINGS)
             .encode_u16_field(SettingsField.STATUS_INTERVAL, milliseconds)
+            .finish())
+
+
+def encode_set_state_record(state: int) -> bytes:
+    """Encode a LapRF RF record to set the "race" state.
+    """
+    return (Encoder(RecordType.STATE_CONTROL)
+            .encode_u8_field(StateControlField.RACE_STATE, state)
             .finish())
 
 

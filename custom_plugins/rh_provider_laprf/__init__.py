@@ -72,7 +72,7 @@ class LapRFProvider():
 
     def startup(self, _args):
         self.startup_device_total = len(self.devices)
-        logger.debug(f'Number of LapRF devices at startup: {self.startup_device_total}')
+        logger.debug(f'Number of LapRF devices configured: {self.startup_device_total}')
         self.get_device_config()
 
         self._rhapi.ui.register_quickbutton(
@@ -167,6 +167,14 @@ class LapRFProvider():
     def set_combined_threshold(self, value, _args):
         self.interface.set_all_thresholds(int(value))
 
+    def race_stage(self, _args):
+        self.interface.set_state(laprf.States.START_RACE)
+
+    def race_stop(self, _args):
+        self.interface.set_state(laprf.States.STOP_RACE)
+
+    def laps_clear(self, _args):
+        self.interface.set_state(laprf.States.STOP_RACE)
 
 class LapRFNode(Node):
     def __init__(self, device, local_index):
@@ -524,7 +532,6 @@ class LapRFInterface(BaseHardwareInterface):
                 for node in device.nodes:
                     self.set_rf_setup(node, node.frequency, node.band_idx, node.channel_idx, gain, node.threshold)
 
-
     def set_rf_setup(self, node, frequency, band_idx, channel_idx, gain, threshold):
         device = node.device
         if device.connected:
@@ -542,6 +549,10 @@ class LapRFInterface(BaseHardwareInterface):
                 logger.error("LapRF ignored our request to change the threshold of node {} (requested {}, is {})".format(node, threshold, node.threshold))
         else:
             logger.debug(f"LapRF command ignored; device at {device.addr} is not connected")
+
+    def set_state(self, state):
+        for device in self.devices:
+            device.write(laprf.encode_set_state_record(state))
 
     def transmit_enter_at_level(self, node, level):
         return level
@@ -614,6 +625,9 @@ def initialize(rhapi):
     # run startup functions
     rhapi.events.on(Evt.STARTUP, provider.startup)
     rhapi.events.on(Evt.SHUTDOWN, provider.shutdown)
+    rhapi.events.on(Evt.RACE_STAGE, provider.race_stage)
+    rhapi.events.on(Evt.RACE_STOP, provider.race_stop)
+    rhapi.events.on(Evt.LAPS_CLEAR, provider.laps_clear)
     # register UI
     rhapi.config.register_section('LapRF')
     rhapi.ui.register_panel('provider_laprf', 'LapRF', 'settings')
