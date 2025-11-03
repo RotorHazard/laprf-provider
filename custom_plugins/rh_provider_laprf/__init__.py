@@ -62,6 +62,7 @@ class LapRFProvider():
 
         self.gain = None
         self.threshold = None
+        self.min_lap = 1
 
         # run startup functions
         rhapi.events.on(Evt.STARTUP, self.startup)
@@ -111,7 +112,20 @@ class LapRFProvider():
             setter_fn=self.set_combined_threshold,
             args=None,
             panel='provider_laprf')
-
+        rhapi.fields.register_function_binding(
+            field=UIField(
+                name='laprf_min_lap_time',
+                label="LapRF Minimum Lap Time (ms)",
+                field_type=UIFieldType.NUMBER,
+                html_attributes={
+                    'min': 0
+                },
+                desc="0–2Bil (Default: 1500)"
+            ),
+            getter_fn=self.get_min_lap,
+            setter_fn=self.set_min_lap,
+            args=None,
+            panel='provider_laprf')
         self.process_config()
         self.init_interface()
         rhapi.interface.add(self.interface)
@@ -219,6 +233,9 @@ class LapRFProvider():
     def get_combined_threshold(self):
         return self.threshold
 
+    def get_min_lap(self):
+        return self.min_lap
+
     def set_combined_gain(self, value, _args):
         self.interface.set_all_gains(int(value))
         self.gain = value
@@ -227,6 +244,11 @@ class LapRFProvider():
     def set_combined_threshold(self, value, _args):
         self.interface.set_all_thresholds(int(value))
         self.threshold = value
+        self._update_status_markdown()
+
+    def set_min_lap(self, value, _args):
+        self.interface.set_min_lap(int(value))
+        self.min_lap = value
         self._update_status_markdown()
 
     def race_stage(self, _args):
@@ -614,6 +636,11 @@ class LapRFInterface(BaseHardwareInterface):
             for device in self.devices:
                 for node in device.nodes:
                     self.set_rf_setup(node, node.frequency, node.band_idx, node.channel_idx, gain, node.threshold)
+
+    def set_min_lap(self, min_lap):
+        if min_lap >= 0 and min_lap <= laprf.MAX_MIN_LAP:
+            for device in self.devices:
+                device.write(laprf.encode_set_min_lap_time_record(min_lap))
 
     def set_rf_setup(self, node, frequency, band_idx, channel_idx, gain, threshold):
         device = node.device
