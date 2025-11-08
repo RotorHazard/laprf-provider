@@ -732,6 +732,14 @@ def decode(packet: bytes):
     return records
 
 
+def encode_save_record() -> bytes:
+    """Encode a LapRF RF record to save current settings to device memory.
+    """
+    return (Encoder(RecordType.SETTINGS)
+            .encode_u8_field(SettingsField.SAVE_SETTINGS, 1)
+            .finish())
+
+
 def encode_get_rtc_time_record() -> bytes:
     """Encode a LapRF RF record to request the RTC time.
     """

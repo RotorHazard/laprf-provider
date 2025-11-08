@@ -6,6 +6,7 @@ import time
 import gevent
 import statistics
 import random
+import json
 
 from sqlalchemy import Boolean
 
@@ -25,7 +26,7 @@ CONNECT_TIMEOUT_S = 5
 RESPONSE_TIMEOUT_S = 0.5
 WRITE_CHILL_TIME_S = 0.01
 READ_POLL_RATE = 0.1
-RESPONSE_SAMPLES = 10
+MAX_RESPONSE_SAMPLES = 10
 
 def serial_url(port):
     if port.startswith('/'):
@@ -60,12 +61,6 @@ class LapRFProvider():
         self.devices = []
         self.interface = None
 
-        self.gain = None
-        self.threshold = None
-        self.gains = [None] * 8
-        self.thresholds = [None] * 8
-        self.min_lap = 1
-
         # run startup functions
         rhapi.events.on(Evt.STARTUP, self.startup)
         rhapi.events.on(Evt.SHUTDOWN, self.shutdown)
@@ -77,64 +72,116 @@ class LapRFProvider():
         rhapi.ui.register_panel('provider_laprf', 'LapRF', 'settings')
         rhapi.fields.register_option(
             field=UIField(
-                name='address',
-                label="LapRF Address",
-                field_type=UIFieldType.TEXT,
-                desc="IP[:port] or USB port",
-                persistent_section="LapRF"
-            ),
-            panel='provider_laprf')
-        '''
-        rhapi.fields.register_function_binding(
-            field=UIField(
-                name='laprf_combined_gain',
-                label="Gain (combined)",
+                name='device_count',
+                label="Device Count",
                 field_type=UIFieldType.NUMBER,
+                value=1,
                 html_attributes={
-                    'min': 0,
-                    'max': laprf.MAX_GAIN
+                    'min': 1
                 },
-                desc="0–63 (Typical: 59)"
+                persistent_section="LapRF",
+                persistent_restart=True
             ),
-            getter_fn=self.get_combined_gain,
-            setter_fn=self.set_combined_gain,
-            args=None,
             panel='provider_laprf')
-        rhapi.fields.register_function_binding(
-            field=UIField(
-                name='laprf_combined_threshold',
-                label="Threshold (combined)",
-                field_type=UIFieldType.NUMBER,
-                html_attributes={
-                    'min': 0,
-                    'max': laprf.MAX_THRESHOLD
-                },
-                desc="0–3000 (Typical: 800)"
-            ),
-            getter_fn=self.get_combined_threshold,
-            setter_fn=self.set_combined_threshold,
-            args=None,
-            panel='provider_laprf')
-        '''
-        rhapi.fields.register_function_binding(
-            field=UIField(
-                name='laprf_min_lap_time',
-                label="Minimum Lap Time (ms)",
-                field_type=UIFieldType.NUMBER,
-                html_attributes={
-                    'min': 0
-                },
-                desc="0–2Bil (Default: 1500)"
-            ),
-            getter_fn=self.get_min_lap,
-            setter_fn=self.set_min_lap,
-            args=None,
-            panel='provider_laprf')
-        for idx in range(8):
+        self.process_config()
+        self.init_vars()
+        self.init_interface()
+        rhapi.interface.add(self.interface)
+        if len(self.devices):
+            for dev_idx, device in enumerate(self.devices):
+                rhapi.fields.register_function_binding(
+                    field=UIField(
+                        name='address_{}'.format(dev_idx),
+                        label="Device {} Address".format(dev_idx + 1),
+                        field_type=UIFieldType.TEXT,
+                        html_attributes={
+                            'min': 0
+                        },
+                        desc="IP[:port] or USB port"
+                    ),
+                    getter_fn=self.get_device_address,
+                    setter_fn=self.set_device_address,
+                    args={
+                        'device': dev_idx
+                    },
+                    panel='provider_laprf')
+
+                rhapi.ui.register_panel(
+                    'provider_laprf_detail_{}'.format(dev_idx),
+                    'LapRF Device {} ({})'.format(dev_idx + 1, device.name if device.name else 'None'),
+                    'settings'
+                )
+                rhapi.fields.register_function_binding(
+                    field=UIField(
+                        name='laprf_{}_min_lap_time'.format(dev_idx),
+                        label="Minimum Lap Time (ms)",
+                        field_type=UIFieldType.NUMBER,
+                        html_attributes={
+                            'min': 1
+                        },
+                        desc="1–2Bn (Default: 1500; Recommended: 1)"
+                    ),
+                    getter_fn=self.get_min_lap,
+                    setter_fn=self.set_min_lap,
+                    args={
+                        'device': dev_idx
+                    },
+                    panel='provider_laprf_detail_{}'.format(dev_idx))
+                for node_idx in range(8):
+                    rhapi.fields.register_function_binding(
+                        field=UIField(
+                            name='laprf_{}_gain_{}'.format(dev_idx, node_idx),
+                            label="Gain {}".format(node_idx + 1),
+                            field_type=UIFieldType.NUMBER,
+                            html_attributes={
+                                'min': 0,
+                                'max': laprf.MAX_GAIN
+                            },
+                            desc="0–63 (Typical: 59)"
+                        ),
+                        getter_fn=self.get_gain,
+                        setter_fn=self.set_gain,
+                        args={
+                            'device': dev_idx,
+                            'index': node_idx
+                        },
+                        panel='provider_laprf_detail_{}'.format(dev_idx))
+                    rhapi.fields.register_function_binding(
+                        field=UIField(
+                            name='laprf_{}_threshold_{}'.format(dev_idx, node_idx),
+                            label="Threshold {}".format(node_idx + 1),
+                            field_type=UIFieldType.NUMBER,
+                            html_attributes={
+                                'min': 0,
+                                'max': laprf.MAX_THRESHOLD
+                            },
+                            desc="0–3000 (Typical: 800)"
+                        ),
+                        getter_fn=self.get_threshold,
+                        setter_fn=self.set_threshold,
+                        args={
+                            'device': dev_idx,
+                            'index': node_idx
+                        },
+                        panel='provider_laprf_detail_{}'.format(dev_idx))
             rhapi.fields.register_function_binding(
                 field=UIField(
-                    name='laprf_gain_{}'.format(idx),
-                    label="Gain {}".format(idx + 1),
+                    name='laprf_min_lap_time',
+                    label="Set All Minimum Lap Times (ms)",
+                    field_type=UIFieldType.NUMBER,
+                    html_attributes={
+                        'min': 1
+                    },
+                    desc="1–2Bn (Default: 1500; Recommended: 1)"
+                ),
+                getter_fn=self.get_combined_min_lap,
+                setter_fn=self.set_combined_min_lap,
+                args=None,
+                panel='provider_laprf')
+            rhapi.fields.register_function_binding(
+                field=UIField(
+                    name='laprf_combined_gain',
+                    label="Set All Gains",
                     field_type=UIFieldType.NUMBER,
                     html_attributes={
                         'min': 0,
@@ -142,14 +189,14 @@ class LapRFProvider():
                     },
                     desc="0–63 (Typical: 59)"
                 ),
-                getter_fn=self.get_gain,
-                setter_fn=self.set_gain,
-                args={'index': idx},
+                getter_fn=self.get_combined_gain,
+                setter_fn=self.set_combined_gain,
+                args=None,
                 panel='provider_laprf')
             rhapi.fields.register_function_binding(
                 field=UIField(
-                    name='laprf_threshold_{}'.format(idx),
-                    label="Threshold {}".format(idx + 1),
+                    name='laprf_combined_threshold',
+                    label="Set All Thresholds",
                     field_type=UIFieldType.NUMBER,
                     html_attributes={
                         'min': 0,
@@ -157,14 +204,45 @@ class LapRFProvider():
                     },
                     desc="0–3000 (Typical: 800)"
                 ),
-                getter_fn=self.get_threshold,
-                setter_fn=self.set_threshold,
-                args={'index': idx},
+                getter_fn=self.get_combined_threshold,
+                setter_fn=self.set_combined_threshold,
+                args=None,
                 panel='provider_laprf')
-        self.process_config()
-        self.init_interface()
-        rhapi.interface.add(self.interface)
-        self._update_status_markdown()
+        self._update_status()
+
+    def get_device_address(self, args):
+        addrs = self.load_addresses()
+        return addrs[args.get('device')]
+
+    def set_device_address(self, value, args):
+        any_device_connected = False
+        for device in self.devices:
+            if device.connected:
+                any_device_connected = True
+                break
+
+        if any_device_connected:
+            self._rhapi.ui.message_notify(f"Stopping LapRF while editing address.")
+
+        self.interface.stop()
+        self.init_vars()
+        addrs = self.load_addresses()
+        addrs[args.get('device')] = value
+        stored_val = json.dumps(addrs)
+        self._rhapi.config.set('LapRF', 'address', stored_val)
+        for dev_idx, device in enumerate(self.devices):
+            self._rhapi.ui.register_panel(
+                'provider_laprf_detail_{}'.format(dev_idx),
+                'LapRF Device {} ({})'.format(dev_idx + 1, addrs[dev_idx] if addrs[dev_idx] else 'None'),
+                'settings'
+            )
+        self._update_status()
+        self._rhapi.ui.broadcast_ui('settings')
+
+    def init_vars(self):
+        self.gains = [[None] * 8 for _ in range(len(self.devices))]
+        self.thresholds = [[None] * 8 for _ in range(len(self.devices))]
+        self.min_laps = [None for _ in range(len(self.devices))]
 
     def init_interface(self):
         logger.info('Initializing LapRF provider')
@@ -172,6 +250,7 @@ class LapRFProvider():
             devices=self.devices
         )
         self.interface.handle_ping_response = self.handle_ping_response
+        self.interface.handle_timeout = self.handle_timeout
         self.interface.init_devices()
 
     def startup(self, _args):
@@ -194,21 +273,39 @@ class LapRFProvider():
             name="laprf-btn-ping",
             label="Ping",
             function=self.ui_ping)
+        self._rhapi.ui.register_quickbutton(
+            panel='provider_laprf',
+            name="laprf-btn-save-all",
+            label="Save",
+            function=self.ui_save)
 
     def shutdown(self, _args):
         logger.info('Shutting down LapRF provider')
         self.interface.stop()
 
+    def load_addresses(self):
+        count = self._rhapi.config.get('LapRF', 'device_count', as_int=True)
+        try:
+            addrs = json.loads(self._rhapi.config.get('LapRF', 'address'))
+            addrs = addrs[:count]
+            while len(addrs) < count:
+                addrs.append(None)
+            return addrs
+        except (TypeError, json.JSONDecodeError) as e:
+            return [None] * self._rhapi.config.get('LapRF', 'device_count', as_int=True)
+
     def process_config(self):
         self.devices = []
-        config_addresses = self._rhapi.config.get('LapRF', 'address')
+        config_addresses = self.load_addresses()
+
         if config_addresses:
-            addresses = config_addresses.split(',')
-            for addr in addresses:
-                addr = addresses[0].strip()
+            for addr in config_addresses:
+                device_name_str = addr
                 addr = self._normalize_addr(addr)
-                device = LapRFDevice(addr)
+                device = LapRFDevice(addr, device_name_str)
                 self.devices.append(device)
+                device.sync_callback = self.sync_callback
+                device.close_callback = self.close_callback
 
         if self.interface:
             if len(self.devices) != self.startup_device_total:
@@ -224,24 +321,61 @@ class LapRFProvider():
                     f"Restart required to use LapRF after changing number of devices. (startup: {self.startup_device_total}; now:{len(self.devices)})")
                 self.interface.stop()
             else:
-                self.interface.start()
-        self._update_status_markdown()
+                self.interface.stop()
+                self._rhapi.ui.message_notify(f"(Re)starting LapRF...")
+
+                status = self.interface.start()
+                if status == True:
+                    self._rhapi.ui.message_notify(f"LapRF connected.")
+                else:
+                    self._rhapi.ui.message_notify(f"Unable to connect to LapRF.")
+        self.get_device_config()
+        self._update_status()
 
     def ui_disable(self, _args):
+        self._rhapi.ui.message_notify(f"Stopping LapRF.")
         self.interface.stop()
-        self._update_status_markdown()
+        self.init_vars()
 
     def ui_ping(self, _args):
-        ping_cmd = laprf.encode_ping_record(time.monotonic())
+        any_device_connected = False
         for device in self.devices:
-            device.write(ping_cmd)
-        self._update_status_markdown()
+            if device.connected:
+                any_device_connected = True
+                break
+
+        if any_device_connected:
+            self._rhapi.ui.message_notify(f"Pinging LapRF...")
+            ping_cmd = laprf.encode_ping_record(time.monotonic())
+            for device in self.devices:
+                device.write(ping_cmd)
+            self._update_status()
+        else:
+            self._rhapi.ui.message_notify(f"No connected LapRF devices to ping.")
 
     def handle_ping_response(self, device, ping_val):
-        self._rhapi.ui.message_notify(f"Got Ping from LapRF at {device.addr}: {ping_val}")
+        self._rhapi.ui.message_notify(f"Got Ping from LapRF at {device.name}: {ping_val}")
+
+    def handle_timeout(self, device):
+        line1 = self._rhapi.__("Lost connection to LapRF device at {0}").format(device.name)
+        line2 = self._rhapi.__('Check network, then reconnect in <a href="/settings">Settings</a>.')
+        self._rhapi.ui.message_alert(f"{line1}<br />{line2}")
+
+    def ui_save(self, _args):
+        any_device_connected = False
+        for device in self.devices:
+            if device.connected:
+                any_device_connected = True
+                break
+
+        if any_device_connected:
+            self._rhapi.ui.message_notify(f"Saving settings to LapRF.")
+            self.interface.save_all()
+        else:
+            self._rhapi.ui.message_notify(f"No connected LapRF devices.")
 
     def _normalize_addr(self, addr):
-        if not addr.startswith(SERIAL_SCHEME) and not addr.startswith(SOCKET_SCHEME):
+        if addr and not addr.startswith(SERIAL_SCHEME) and not addr.startswith(SOCKET_SCHEME):
             # addr is not a url
             if addr.startswith('/'):
                 # assume serial/file
@@ -256,54 +390,68 @@ class LapRFProvider():
 
     def get_device_config(self):
         if len(self.interface.devices):
-            device = self.interface.devices[0]
-            if device.connected:
-                node = device.nodes[0]
-                self.gain = node.gain
-                self.threshold = node.threshold
-                for idx, node in enumerate(device.nodes):
-                    self.gains[idx] = node.gain
-                    self.thresholds[idx] = node.threshold
+            for dev_idx, device in enumerate(self.interface.devices):
+                if device.connected:
+                    for idx, node in enumerate(device.nodes):
+                        self.gains[dev_idx][idx] = node.gain
+                        self.thresholds[dev_idx][idx] = node.threshold
+                    self.min_laps[dev_idx] = device.min_lap_time
 
     def get_combined_gain(self, _args):
-        return self.gain
+        return None
 
     def get_combined_threshold(self, _args):
-        return self.threshold
+        return None
+
+    def get_combined_min_lap(self, _args):
+        return None
 
     def get_gain(self, args):
-        return self.gains[args.get('index')]
+        return self.gains[args.get('device')][args.get('index')]
 
     def get_threshold(self, args):
-        return self.thresholds[args.get('index')]
+        return self.thresholds[args.get('device')][args.get('index')]
 
-    def get_min_lap(self, _args):
-        return self.min_lap
+    def get_min_lap(self, args):
+        return self.min_laps[args.get('device')]
 
     def set_combined_gain(self, value, _args):
         self.interface.set_all_gains(int(value))
-        self.gain = value
-        self._update_status_markdown()
+        for dev_idx, device in enumerate(self.devices):
+            for node_idx, _ in enumerate(self.gains[dev_idx]):
+                self.gains[dev_idx][node_idx] = int(value)
+        self._update_status()
 
     def set_combined_threshold(self, value, _args):
         self.interface.set_all_thresholds(int(value))
-        self.threshold = value
-        self._update_status_markdown()
+        for dev_idx, device in enumerate(self.devices):
+            for node_idx, _ in enumerate(self.thresholds[dev_idx]):
+                self.thresholds[dev_idx][node_idx] = int(value)
+        self._update_status()
+
+    def set_combined_min_lap(self, value, _args):
+        self.interface.set_all_min_lap(int(value))
+        for dev_idx, device in enumerate(self.devices):
+            self.min_laps[dev_idx] = value
+        self._update_status()
 
     def set_gain(self, value, args):
-        self.interface.set_gain(args.get('index'), int(value))
-        self.gains[args.get('index')] = int(value)
-        self._update_status_markdown()
+        if self.devices[args.get('device')].connected:
+            self.interface.set_gain(args.get('device'), args.get('index'), int(value))
+            self.gains[args.get('device')][args.get('index')] = int(value)
+        self._update_status()
 
     def set_threshold(self, value, args):
-        self.interface.set_threshold(args.get('index'), int(value))
-        self.thresholds[args.get('index')] = int(value)
-        self._update_status_markdown()
+        if self.devices[args.get('device')].connected:
+            self.interface.set_threshold(args.get('device'), args.get('index'), int(value))
+            self.thresholds[args.get('device')][args.get('index')] = int(value)
+        self._update_status()
 
-    def set_min_lap(self, value, _args):
-        self.interface.set_min_lap(int(value))
-        self.min_lap = value
-        self._update_status_markdown()
+    def set_min_lap(self, value, args):
+        if self.devices[args.get('device')].connected:
+            self.interface.set_min_lap(args.get('device'), int(value))
+            self.min_laps[args.get('device')] = value
+        self._update_status()
 
     def race_stage(self, _args):
         self.interface.set_state(laprf.States.START_RACE)
@@ -314,21 +462,30 @@ class LapRFProvider():
     def laps_clear(self, _args):
         self.interface.set_state(laprf.States.STOP_RACE)
 
-    def _update_status_markdown(self):
-        md_output = '_Refresh page to update status_\n'
+    def sync_callback(self):
+        self._update_status()
+
+    def close_callback(self):
+        self._update_status()
+
+    def _update_status(self):
+        md_output = ''
+        addrs = self.load_addresses()
         if self.interface and len(self.interface.devices):
-            for device in self.interface.devices:
-                md_output += f"# LapRF Device at {device.addr}\n"
+            for idx, device in enumerate(self.interface.devices):
+                md_output += f"* LapRF {idx + 1} ({addrs[idx] if addrs[idx] else 'None'}): "
                 if device.connected:
-                    if len(device._network_timestamp_samples):
-                        md_output += f"Sync within {device._network_timestamp_samples[0]['response'] * 1000}\n"
-                    md_output += f"Offset {device._time_offset}\n"
+                    if device.sync:
+                        md_output += f"Syncronized within {device.sync_ms:.1f}ms\n"
+                    else:
+                        md_output += f"Synchronizing...\n"
                 else:
                     md_output += "Device not connected\n"
         else:
             md_output += "No devices connected."
 
         self._rhapi.ui.register_markdown('provider_laprf', 'laprf_status', md_output)
+        self._rhapi.ui.broadcast_ui('settings', replace_panels=False)
 
 
 class LapRFNode(Node):
@@ -344,11 +501,14 @@ class LapRFNode(Node):
 
 
 class LapRFDevice():
-    def __init__(self, addr):
+    def __init__(self, addr, device_name_str):
+        self.name = device_name_str
         self.addr = addr
         self.stream_buffer = bytearray()
         self.io_stream = None
         self.connected = False
+        self.sync_ms = None
+        self.sync = False
         self.nodes=[]
 
         self._last_write_timestamp = 0
@@ -381,9 +541,13 @@ class LapRFDevice():
             try:
                 self.io_stream = self._create_stream()
                 self.connected = True
+                self.sync = False
+                return True
             except Exception:
-                logger.warning(f"Unable to connect to LapRF at {self.addr}")
+                logger.warning(f"Unable to connect to LapRF at {self.name}")
                 self.io_stream = None
+                return False
+        return None
 
     def _create_stream(self):
         if self.addr.startswith(SERIAL_SCHEME):
@@ -421,13 +585,19 @@ class LapRFDevice():
 
     def read(self):
         if self.connected:
-            return self.io_stream.read(512)
+            try:
+                return self.io_stream.read(512)
+            except TimeoutError:
+                logger.info(f"LapRF device {self.name} timed out")
+                self.close()
+                raise
 
     def close(self):
         if self.connected:
             self.io_stream.close()
             self.io_stream = None
         self.connected = False
+        self.close_callback()
 
     def server_timestamp_from_laprf(self, laprf_raw_timestamp):
         return (laprf_raw_timestamp / 1000000) - self._time_offset
@@ -464,15 +634,24 @@ class LapRFDevice():
             samples = [item['diff'] for item in self._network_timestamp_samples]
             self._time_offset = statistics.median(samples) if len(samples) else offset_sample['diff']
 
+            self.sync_ms = self._network_timestamp_samples[0]['response'] * 1000
+
             # continue sampling to improve accuracy
-            if (len(self._network_timestamp_samples) < RESPONSE_SAMPLES and
+            if (len(self._network_timestamp_samples) < MAX_RESPONSE_SAMPLES and
                     self._network_timestamp_samples[0]['response'] > 0.001):
-                # logger.debug(f'Synchronizing LapRF... now within {self._network_timestamp_samples[0]['response']*1000:.1f}ms ({len(self._network_timestamp_samples)})')
+                logger.debug(f'Synchronizing LapRF... now within {self.sync_ms:.1f}ms ({len(self._network_timestamp_samples)})')
                 delay_s = (random.random() * 0.5) + 0.25
                 gevent.spawn_later(delay_s, self.request_timestamp)
             else:
-                logger.debug(f"Synchronized LapRF within {self._network_timestamp_samples[0]['response']*1000:.1f}ms ({len(self._network_timestamp_samples)})")
+                self.sync = True
+                self.sync_callback()
+                logger.info(f"Synchronized LapRF clock within {self.sync_ms:.1f}ms")
 
+    def sync_callback(self):
+        pass
+
+    def close_callback(self):
+        pass
 
 class LapRFInterface(BaseHardwareInterface):
     def __init__(self, *args, **kwargs):
@@ -505,11 +684,11 @@ class LapRFInterface(BaseHardwareInterface):
 
     def configure_device(self, device):
         try:
-            device.write(laprf.encode_set_min_lap_time_record(1))
+            device.write(laprf.encode_get_min_lap_time_record())
             device.write(laprf.encode_get_rf_setup_record())
             self._wait_for_configuration(device, device)
             if not device.is_configured:
-                raise Exception(f"LapRF at {device.addr} did not respond with RF setup information")
+                raise Exception(f"LapRF at {device.name} did not respond with RF setup information")
         except:
             pass
 
@@ -531,6 +710,9 @@ class LapRFInterface(BaseHardwareInterface):
                         self.configure_device(device)
                     if device.is_configured:
                         device.request_timestamp()
+                return True
+            return False
+        return None
 
     def stop(self):
         self.log('Stopping LapRF background thread')
@@ -546,6 +728,7 @@ class LapRFInterface(BaseHardwareInterface):
                 gevent.sleep(sleep_interval)
         except KeyboardInterrupt:
             logger.info("Update thread terminated by keyboard interrupt")
+            raise
         self.log('LapRF background thread ended')
         self.update_thread = None
         for device in self.devices:
@@ -553,7 +736,11 @@ class LapRFInterface(BaseHardwareInterface):
 
     def _update(self):
         for device in self.devices:
-            data = device.read()
+            try:
+                data = device.read()
+            except TimeoutError:
+                self.handle_timeout(device)
+                data = None
             if data:
                 end = data.rfind(laprf.EOR)
                 if end == -1:
@@ -636,14 +823,14 @@ class LapRFInterface(BaseHardwareInterface):
             #     self._notify_gain_changed(node)
         elif isinstance(record, laprf.TimeEvent):
             device.calc_timestamp_offset(record.rtc_time)
-            logger.debug("LapRF Time: {}".format(record.rtc_time))
+            # logger.debug("LapRF Time: {}".format(record.rtc_time))
             # assert record.rtc_time is not None
             # if node_manager.race_start_time_request_ts_ms is not None:
             #     server_oneway_ms = round((ms_counter() - node_manager.race_start_time_request_ts_ms)/2)
             #     node_manager.race_start_rtc_time_ms = micros_to_millis(record.rtc_time) - server_oneway_ms
             #     node_manager.race_start_time_request_ts_ms = None
         elif isinstance(record, laprf.SettingsEvent):
-            logger.debug("LapRF Min Lap: {}".format(record.min_lap_time))
+            # logger.debug("LapRF Min Lap: {}".format(record.min_lap_time))
             if record.min_lap_time:
                 device.min_lap_time = record.min_lap_time
         elif isinstance(record, laprf.PingEvent):
@@ -652,6 +839,9 @@ class LapRFInterface(BaseHardwareInterface):
             logger.warning("Unsupported record: {}".format(record))
 
     def handle_ping_response(self, device, ping_val):
+        pass
+
+    def handle_timeout(self, device):
         pass
 
     def set_frequency(self, node_index, frequency, band=0, channel=0):
@@ -665,15 +855,19 @@ class LapRFInterface(BaseHardwareInterface):
         node.debug_pass_count = 0  # reset debug pass count on frequency change
         self.set_rf_setup(node, frequency, band_idx, channel_idx, node.gain, node.threshold)
 
-    def set_threshold(self, node_index, threshold):
+    def set_threshold(self, device_idx, node_index, threshold):
         if threshold >= 0 and threshold <= laprf.MAX_THRESHOLD:
-            node = self.nodes[node_index]
+            node = self.devices[device_idx].nodes[node_index]
             self.set_rf_setup(node, node.frequency, node.band_idx, node.channel_idx, node.gain, threshold)
 
-    def set_gain(self, node_index, gain):
+    def set_gain(self, device_idx, node_index, gain):
         if gain >= 0 and gain <= laprf.MAX_GAIN:
-            node = self.nodes[node_index]
+            node = self.devices[device_idx].nodes[node_index]
             self.set_rf_setup(node, node.frequency, node.band_idx, node.channel_idx, gain, node.threshold)
+
+    def set_min_lap(self, device_idx, min_lap):
+        if min_lap >= 0 and min_lap <= laprf.MAX_MIN_LAP:
+            self.devices[device_idx].write(laprf.encode_set_min_lap_time_record(min_lap))
 
     def set_all_thresholds(self, threshold):
         if threshold >= 0 and threshold <= laprf.MAX_THRESHOLD:
@@ -687,10 +881,14 @@ class LapRFInterface(BaseHardwareInterface):
                 for node in device.nodes:
                     self.set_rf_setup(node, node.frequency, node.band_idx, node.channel_idx, gain, node.threshold)
 
-    def set_min_lap(self, min_lap):
+    def set_all_min_lap(self, min_lap):
         if min_lap >= 0 and min_lap <= laprf.MAX_MIN_LAP:
             for device in self.devices:
                 device.write(laprf.encode_set_min_lap_time_record(min_lap))
+
+    def save_all(self):
+        for device in self.devices:
+            device.write(laprf.encode_save_record())
 
     def set_rf_setup(self, node, frequency, band_idx, channel_idx, gain, threshold):
         device = node.device
