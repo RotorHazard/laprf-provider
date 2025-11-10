@@ -69,7 +69,7 @@ class LapRFProvider():
         rhapi.events.on(Evt.LAPS_CLEAR, self.laps_clear)
         # register UI
         rhapi.config.register_section('LapRF')
-        rhapi.ui.register_panel('provider_laprf', 'LapRF', 'settings')
+        rhapi.ui.register_panel('provider_laprf', 'LapRF General Setup', 'settings')
         rhapi.fields.register_option(
             field=UIField(
                 name='device_count',
@@ -77,7 +77,7 @@ class LapRFProvider():
                 field_type=UIFieldType.NUMBER,
                 value=1,
                 html_attributes={
-                    'min': 1
+                    'min': 0
                 },
                 persistent_section="LapRF",
                 persistent_restart=True
@@ -268,15 +268,15 @@ class LapRFProvider():
             name="laprf-btn-disconnect",
             label="Disconnect",
             function=self.ui_disable)
-        self._rhapi.ui.register_quickbutton(
-            panel='provider_laprf',
-            name="laprf-btn-ping",
-            label="Ping",
-            function=self.ui_ping)
+        # self._rhapi.ui.register_quickbutton(
+        #    panel='provider_laprf',
+        #    name="laprf-btn-ping",
+        #    label="Ping",
+        #    function=self.ui_ping)
         self._rhapi.ui.register_quickbutton(
             panel='provider_laprf',
             name="laprf-btn-save-all",
-            label="Save",
+            label="Save to Device",
             function=self.ui_save)
 
     def shutdown(self, _args):
@@ -297,15 +297,13 @@ class LapRFProvider():
     def process_config(self):
         self.devices = []
         config_addresses = self.load_addresses()
-
-        if config_addresses:
-            for addr in config_addresses:
-                device_name_str = addr
-                addr = self._normalize_addr(addr)
-                device = LapRFDevice(addr, device_name_str)
-                self.devices.append(device)
-                device.sync_callback = self.sync_callback
-                device.close_callback = self.close_callback
+        for addr in config_addresses:
+            device_name_str = addr
+            addr = self._normalize_addr(addr)
+            device = LapRFDevice(addr, device_name_str)
+            self.devices.append(device)
+            device.sync_callback = self.sync_callback
+            device.close_callback = self.close_callback
 
         if self.interface:
             if len(self.devices) != self.startup_device_total:
@@ -469,11 +467,10 @@ class LapRFProvider():
         self._update_status()
 
     def _update_status(self):
-        md_output = ''
         addrs = self.load_addresses()
         if self.interface and len(self.interface.devices):
             for idx, device in enumerate(self.interface.devices):
-                md_output += f"* LapRF {idx + 1} ({addrs[idx] if addrs[idx] else 'None'}): "
+                md_output = '<p style="text-align:center">'
                 if device.connected:
                     if device.sync:
                         md_output += f"Syncronized within {device.sync_ms:.1f}ms\n"
@@ -481,10 +478,9 @@ class LapRFProvider():
                         md_output += f"Synchronizing...\n"
                 else:
                     md_output += "Device not connected\n"
-        else:
-            md_output += "No devices connected."
+                md_output += '</p>'
+                self._rhapi.ui.register_markdown('provider_laprf_detail_{}'.format(idx), 'laprf_status', md_output)
 
-        self._rhapi.ui.register_markdown('provider_laprf', 'laprf_status', md_output)
         self._rhapi.ui.broadcast_ui('settings', replace_panels=False)
 
 
