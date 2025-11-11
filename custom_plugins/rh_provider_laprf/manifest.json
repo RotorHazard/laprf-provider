@@ -1,13 +1,12 @@
 {
     "domain": "provider_laprf",
-    "name": "LapRF Provider",
+    "name": "LapRF Interface",
     "author": "RotorHazard Team",
     "author_uri": "https://github.com/RotorHazard/RotorHazard/",
-    "description": "Allows RotorHazard to communicate with an ImmersionRC LapRF8",
-    "documentation_uri": "https://github.com/RotorHazard/...",
+    "description": "Control and data connection to Orqa/ImmersionRC LapRF 8-way",
+    "documentation_uri": "https://github.com/RotorHazard/laprf-provider",
     "license": "RotorHazard",
     "license_uri": "https://github.com/RotorHazard/RotorHazard/blob/main/LICENSE",
-    "version": "1.0.0",
-    "required_rhapi_version": "1.4",
-    "category": ["Race Management"]
+    "version": "1.0.0-beta.1",
+    "required_rhapi_version": "1.4"
 }
