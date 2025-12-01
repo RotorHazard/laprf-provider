@@ -14,7 +14,7 @@ from . import laprf_protocol as laprf
 
 from eventmanager import Evt
 from RHUI import UIField, UIFieldType, UIFieldSelectOption
-from BaseHardwareInterface import BaseHardwareInterface
+from BaseHardwareInterface import BaseHardwareInterface, PeakNadirHistory, MarshalType
 from Node import Node
 from Database import LapSource
 
@@ -655,6 +655,7 @@ class LapRFInterface(BaseHardwareInterface):
         self.update_loop_enabled = False
         self.update_thread = None # Thread for running the main update loop
         self.devices = kwargs['devices']
+        self.marshal_type = MarshalType.PASS_PEAK_ONLY
 
     @property
     def nodes(self):
@@ -742,7 +743,6 @@ class LapRFInterface(BaseHardwareInterface):
                 if end == -1:
                     device.stream_buffer.extend(data)
                     return
-
                 records = laprf.decode(device.stream_buffer + data[:end + 1])
                 device.stream_buffer = bytearray(data[end + 1:])
                 for record in records:
@@ -761,15 +761,18 @@ class LapRFInterface(BaseHardwareInterface):
         if isinstance(record, laprf.StatusEvent):
             #assert record.battery_voltage is not None
             #device.voltage = millivolts_to_volts(record.battery_voltage)
-            # rssi_ts_ms = time.monotonic()
+            rssi_ts = time.monotonic()
             for idx, rssi in enumerate(record.last_rssi):
                 if rssi is not None:
                     node = device.nodes[idx]
                     node.current_rssi = rssi
                     node.node_peak_rssi = max(rssi, node.node_peak_rssi)
                     node.node_nadir_rssi = min(rssi, node.node_nadir_rssi)
-                    # filtered_ts_ms, filtered_rssi = node.history_filter.filter(rssi_ts_ms, rssi)
-                    # self.append_rssi_history(node, filtered_ts_ms, filtered_rssi)
+                    pn_history = PeakNadirHistory(node.index)
+                    pn_history.peakRssi = rssi
+                    pn_history.peakFirstTime = 0
+                    pn_history.peakLastTime = 0
+                    self.process_history(node, rssi_ts, pn_history)
 
         elif isinstance(record, laprf.PassingEvent):
             # logger.debug("LapRF Pass: {}".format(record))
@@ -779,7 +782,12 @@ class LapRFInterface(BaseHardwareInterface):
             node = device.nodes[local_index]
             node.pass_peak_rssi = record.peak_height
             node.node_peak_rssi = max(record.peak_height, node.node_peak_rssi)
-            self.pass_record_callback(node, device.server_timestamp_from_laprf(record.rtc_time), LapSource.REALTIME, peak=record.peak_height)
+            if record.peak_height < node.enter_at_level:
+                self.pass_record_callback(node, device.server_timestamp_from_laprf(record.rtc_time), LapSource.REALTIME,
+                                          peak=record.peak_height, ignore=True)
+            else:
+                self.pass_record_callback(node, device.server_timestamp_from_laprf(record.rtc_time), LapSource.REALTIME,
+                                          peak=record.peak_height, ignore=False)
 
             # if self.is_racing:
             #     node.pass_history.append(RssiSample(lap_ts_ms + self.race_start_time_ms, pass_peak_rssi))
@@ -804,8 +812,8 @@ class LapRFInterface(BaseHardwareInterface):
             else:
                 node.frequency = 0
             #     node.bandChannel = None
-            old_threshold = node.threshold
-            old_gain = node.gain
+            # old_threshold = node.threshold
+            # old_gain = node.gain
             node.threshold = record.threshold
             node.gain = record.gain
             node.is_configured = True
