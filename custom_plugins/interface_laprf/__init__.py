@@ -656,6 +656,7 @@ class LapRFInterface(BaseHardwareInterface):
         self.update_thread = None # Thread for running the main update loop
         self.devices = kwargs['devices']
         self.marshal_type = MarshalType.PASS_PEAK_ONLY
+        self.ready_failure_msg = "LapRF device is not connected. Check device, then reconnect in settings."
 
     @property
     def nodes(self):
@@ -668,6 +669,13 @@ class LapRFInterface(BaseHardwareInterface):
     @nodes.setter
     def nodes(self, value):
         pass
+
+    @property
+    def ready(self):
+        for device in self.devices:
+            if not device.connected:
+                return False
+        return True
 
     #
     # Update Loop
