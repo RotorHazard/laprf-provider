@@ -7,6 +7,6 @@
     "documentation_uri": "https://github.com/RotorHazard/LapRF-Interface",
     "license": "RotorHazard",
     "license_uri": "https://github.com/RotorHazard/RotorHazard/blob/main/LICENSE",
-    "version": "1.0.0-beta.1",
+    "version": "1.0.0-beta.2",
     "required_rhapi_version": "1.4"
 }
